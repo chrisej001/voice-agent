@@ -14,25 +14,19 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY
 const openai = new OpenAI({ apiKey: process.env.OPENAI_KEY });
 
 /* ==========================================================
-   🧩 1. Test Webhook Route (for manual testing)
-   ========================================================== */
-app.post("/webhook", (req, res) => {
-  console.log("Webhook received:", req.body);
-  res.status(200).send("Webhook received!");
-});
-
-/* ==========================================================
-   🧩 2. Termii Incoming Route - Multi-turn + Hang-up
+   🧩 Termii Incoming Route - Multi-turn + Hang-up
    ========================================================== */
 app.post("/termii/incoming", async (req, res) => {
   const { caller, status, speech_text, hospital_id } = req.body;
   const callerPhone = caller || "+2348138693864";
   const hospital = hospital_id || "default";
 
+  console.log("Webhook received:", req.body);
+
   try {
     if (status === "incoming") {
       // Start a new session
-      const prompt = `You are a friendly hospital receptionist for ${hospital} Hospital. Greet the caller warmly, ask one short question about their main problem, and tell them the next step. Keep the reply short and clear (20-30 seconds spoken).`;
+      const prompt = `You are a friendly hospital receptionist for ${hospital} Hospital. Greet the caller warmly, ask one short question about their main problem, and tell them the next step. Keep the reply short and clear (about 20-30 seconds spoken).`;
 
       const aiResponse = await openai.chat.completions.create({
         model: "gpt-4o-mini",
@@ -46,6 +40,8 @@ app.post("/termii/incoming", async (req, res) => {
       const reply = aiResponse.choices?.[0]?.message?.content?.trim() || 
                     "Hello — thank you for calling. Please hold while we connect you.";
 
+      console.log("AI Reply:", reply);
+
       // Send AI reply as Termii voice message
       const termiiResp = await axios.post("https://v3.api.termii.com/api/sms/send", {
         api_key: process.env.TERMII_KEY,
@@ -56,8 +52,10 @@ app.post("/termii/incoming", async (req, res) => {
         channel: "voice"
       });
 
-      // Save session in Supabase
-      await supabase.from("call_sessions").insert({
+      console.log("Termii response:", termiiResp.data);
+
+      // Save session with Supabase and log the result
+      const { data, error } = await supabase.from("call_sessions").insert({
         hospital_id: hospital,
         caller_phone: callerPhone,
         ai_summary: reply,
@@ -65,11 +63,14 @@ app.post("/termii/incoming", async (req, res) => {
         status: "ongoing"
       });
 
-      console.log("Started session for:", callerPhone, "AI Reply:", reply);
+      console.log("Supabase insert data:", data);
+      console.log("Supabase insert error:", error);
+
+      console.log("Started session for:", callerPhone);
     } 
     
     else if (status === "speech" && speech_text) {
-      // Multi-turn conversation: follow-up input
+      // Multi-turn conversation
       const session = await supabase.from("call_sessions")
         .select("*")
         .eq("caller_phone", callerPhone)
@@ -93,7 +94,10 @@ app.post("/termii/incoming", async (req, res) => {
         const reply = aiResponse.choices?.[0]?.message?.content?.trim() || 
                       "Thank you. Please hold while we connect you.";
 
-        await axios.post("https://v3.api.termii.com/api/sms/send", {
+        console.log("Follow-up AI reply:", reply);
+
+        // Send AI reply as Termii voice
+        const termiiResp = await axios.post("https://v3.api.termii.com/api/sms/send", {
           api_key: process.env.TERMII_KEY,
           to: callerPhone,
           from: process.env.TERMII_SENDER || "FRCare",
@@ -102,11 +106,15 @@ app.post("/termii/incoming", async (req, res) => {
           channel: "voice"
         });
 
-        await supabase.from("call_sessions")
+        console.log("Termii follow-up response:", termiiResp.data);
+
+        // Update session in Supabase
+        const { data, error } = await supabase.from("call_sessions")
           .update({ ai_summary: reply })
           .eq("id", session.data.id);
 
-        console.log("Follow-up AI reply sent:", reply);
+        console.log("Supabase update data:", data);
+        console.log("Supabase update error:", error);
       }
     }
 
@@ -121,10 +129,12 @@ app.post("/termii/incoming", async (req, res) => {
         .single();
 
       if (session.data) {
-        await supabase.from("call_sessions")
+        const { data, error } = await supabase.from("call_sessions")
           .update({ status: "completed" })
           .eq("id", session.data.id);
-        console.log(`Session for ${callerPhone} ended due to hang-up`);
+
+        console.log(`Session for ${callerPhone} ended. Supabase update data:`, data);
+        console.log(`Supabase update error:`, error);
       }
     }
 
@@ -137,7 +147,6 @@ app.post("/termii/incoming", async (req, res) => {
 });
 
 /* ==========================================================
-   🧩 3. Render-friendly Server Setup
+   🧩 Server Setup
    ========================================================== */
-const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => console.log(`✅ Voice Agent running on port ${PORT}`));
+app.listen(8080, () => console.log("✅ Voice Agent running on port 8080"));
