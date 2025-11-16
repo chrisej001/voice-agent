@@ -1,152 +1,102 @@
 import 'dotenv/config';
-import express from "express";
-import axios from "axios";
-import { createClient } from "@supabase/supabase-js";
-import OpenAI from "openai";
+import { createClient } from '@supabase/supabase-js';
+import OpenAI from 'openai';
+import Ari from 'ari-client';
+import fs from 'fs';
+import path from 'path';
+import { exec } from 'child_process';
 
-const app = express();
-app.use(express.json());
-
-// Connect to Supabase
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
-
-// Connect to OpenAI
 const openai = new OpenAI({ apiKey: process.env.OPENAI_KEY });
 
-/* ==========================================================
-   🧩 Termii Incoming Route - Multi-turn + Hang-up
-   ========================================================== */
-app.post("/termii/incoming", async (req, res) => {
-  const { caller, status, speech_text, hospital_id } = req.body;
-  const callerPhone = caller || "+2348138693864";
-  const hospital = hospital_id || "default";
+// ARI settings
+const ARI_URL = 'http://127.0.0.1:8088';
+const ARI_USER = 'asterisk-user';
+const ARI_PASS = 'StrongARIpass123';
+const APP_NAME = 'ai-agent'; // matches Stasis() context in extensions.conf
 
-  console.log("Webhook received:", req.body);
+// Utility: save TTS audio file from OpenAI text (using say CLI or other TTS engine)
+function textToAudio(text, filePath) {
+  return new Promise((resolve, reject) => {
+    exec(`say -o ${filePath} --data-format=LEF32@22050 "${text}"`, (err) => {
+      if (err) reject(err);
+      else resolve();
+    });
+  });
+}
 
-  try {
-    if (status === "incoming") {
-      // Start a new session
-      const prompt = `You are a friendly hospital receptionist for ${hospital} Hospital. Greet the caller warmly, ask one short question about their main problem, and tell them the next step. Keep the reply short and clear (about 20-30 seconds spoken).`;
+// Connect to ARI
+Ari.connect(`${ARI_URL}/ari`, ARI_USER, ARI_PASS)
+  .then(client => {
+    console.log('✅ Connected to Asterisk ARI');
 
-      const aiResponse = await openai.chat.completions.create({
-        model: "gpt-4o-mini",
+    client.on('StasisStart', async (event, channel) => {
+      console.log(`Incoming call from ${channel.name}`);
+      await channel.answer();
+
+      // Create a new session in Supabase
+      const { data: sessionData, error: insertError } = await supabase
+        .from('call_sessions')
+        .insert({ caller_phone: channel.name, status: 'ongoing', ai_summary: '' });
+
+      const sessionId = sessionData?.[0]?.id;
+
+      let lastReply = '';
+
+      // Initial AI greeting
+      const prompt = `You are a friendly hospital receptionist. Greet the caller warmly and ask their main problem briefly. Keep it short.`;
+      const aiResp = await openai.chat.completions.create({
+        model: 'gpt-4o-mini',
         messages: [
-          { role: "system", content: "You are a polite, concise hospital receptionist." },
-          { role: "user", content: prompt }
+          { role: 'system', content: 'You are a polite hospital receptionist.' },
+          { role: 'user', content: prompt }
         ],
         max_tokens: 180
       });
 
-      const reply = aiResponse.choices?.[0]?.message?.content?.trim() || 
-                    "Hello — thank you for calling. Please hold while we connect you.";
+      lastReply = aiResp.choices[0].message.content.trim();
+      console.log('AI Reply:', lastReply);
 
-      console.log("AI Reply:", reply);
+      // Convert AI reply to audio and play on channel
+      const audioFile = `/tmp/${channel.name}_reply.wav`;
+      await textToAudio(lastReply, audioFile);
+      await channel.play({ media: `file://${audioFile}` });
 
-      // Send AI reply as Termii voice message
-      const termiiResp = await axios.post("https://v3.api.termii.com/api/sms/send", {
-        api_key: process.env.TERMII_KEY,
-        to: callerPhone,
-        from: process.env.TERMII_SENDER || "FRCare",
-        sms: reply,
-        type: "plain",
-        channel: "voice"
-      });
+      // Update session in Supabase
+      await supabase.from('call_sessions').update({ ai_summary: lastReply }).eq('id', sessionId);
 
-      console.log("Termii response:", termiiResp.data);
+      // Listen for speech input (replace with your speech-to-text implementation)
+      channel.on('DTMFReceived', async (dtmf) => {
+        const callerText = dtmf.digit; // placeholder for demo, replace with real STT
 
-      // Save session with Supabase and log the result
-      const { data, error } = await supabase.from("call_sessions").insert({
-        hospital_id: hospital,
-        caller_phone: callerPhone,
-        ai_summary: reply,
-        termii_response: termiiResp.data,
-        status: "ongoing"
-      });
+        const prompt2 = `Continue conversation based on last AI summary: "${lastReply}". Caller just said: "${callerText}". Reply concisely.`;
 
-      console.log("Supabase insert data:", data);
-      console.log("Supabase insert error:", error);
-
-      console.log("Started session for:", callerPhone);
-    } 
-    
-    else if (status === "speech" && speech_text) {
-      // Multi-turn conversation
-      const session = await supabase.from("call_sessions")
-        .select("*")
-        .eq("caller_phone", callerPhone)
-        .eq("status", "ongoing")
-        .order("id", { ascending: false })
-        .limit(1)
-        .single();
-
-      if (session.data) {
-        const prompt = `You are a friendly hospital receptionist. Continue the conversation based on this previous AI summary: "${session.data.ai_summary}". The caller just said: "${speech_text}". Reply concisely, politely, and give next step instructions if needed.`;
-
-        const aiResponse = await openai.chat.completions.create({
-          model: "gpt-4o-mini",
+        const aiResp2 = await openai.chat.completions.create({
+          model: 'gpt-4o-mini',
           messages: [
-            { role: "system", content: "You are a polite, concise hospital receptionist." },
-            { role: "user", content: prompt }
+            { role: 'system', content: 'You are a polite hospital receptionist.' },
+            { role: 'user', content: prompt2 }
           ],
           max_tokens: 180
         });
 
-        const reply = aiResponse.choices?.[0]?.message?.content?.trim() || 
-                      "Thank you. Please hold while we connect you.";
+        lastReply = aiResp2.choices[0].message.content.trim();
+        console.log('Follow-up AI reply:', lastReply);
 
-        console.log("Follow-up AI reply:", reply);
+        const followupAudio = `/tmp/${channel.name}_reply2.wav`;
+        await textToAudio(lastReply, followupAudio);
+        await channel.play({ media: `file://${followupAudio}` });
 
-        // Send AI reply as Termii voice
-        const termiiResp = await axios.post("https://v3.api.termii.com/api/sms/send", {
-          api_key: process.env.TERMII_KEY,
-          to: callerPhone,
-          from: process.env.TERMII_SENDER || "FRCare",
-          sms: reply,
-          type: "plain",
-          channel: "voice"
-        });
+        await supabase.from('call_sessions').update({ ai_summary: lastReply }).eq('id', sessionId);
+      });
 
-        console.log("Termii follow-up response:", termiiResp.data);
+      // Handle call hangup
+      channel.on('ChannelDestroyed', async () => {
+        console.log(`Call with ${channel.name} ended`);
+        await supabase.from('call_sessions').update({ status: 'completed' }).eq('id', sessionId);
+      });
+    });
 
-        // Update session in Supabase
-        const { data, error } = await supabase.from("call_sessions")
-          .update({ ai_summary: reply })
-          .eq("id", session.data.id);
-
-        console.log("Supabase update data:", data);
-        console.log("Supabase update error:", error);
-      }
-    }
-
-    else if (status === "disconnected" || status === "call_ended") {
-      // Caller hung up
-      const session = await supabase.from("call_sessions")
-        .select("*")
-        .eq("caller_phone", callerPhone)
-        .eq("status", "ongoing")
-        .order("id", { ascending: false })
-        .limit(1)
-        .single();
-
-      if (session.data) {
-        const { data, error } = await supabase.from("call_sessions")
-          .update({ status: "completed" })
-          .eq("id", session.data.id);
-
-        console.log(`Session for ${callerPhone} ended. Supabase update data:`, data);
-        console.log(`Supabase update error:`, error);
-      }
-    }
-
-    res.status(200).send("OK");
-
-  } catch (error) {
-    console.error("Error handling Termii webhook:", error.response?.data || error.message);
-    res.status(500).send("Server error");
-  }
-});
-
-/* ==========================================================
-   🧩 Server Setup
-   ========================================================== */
-app.listen(8080, () => console.log("✅ Voice Agent running on port 8080"));
+    client.start(APP_NAME);
+  })
+  .catch(err => console.error('ARI connection error:', err));
