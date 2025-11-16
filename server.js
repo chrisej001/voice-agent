@@ -142,7 +142,13 @@ wss.on("connection", async (ws, req) => {
 });
 
 // Listen on Render-provided port
-const PORT = Number(process.env.PORT || 3001);
+const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3001;
+if (isNaN(PORT)) {
+  console.error("Invalid PORT:", process.env.PORT);
+  process.exit(1);
+}
+
 server.listen(PORT, () => {
   console.log(`Server listening on port ${PORT}`);
 });
+
