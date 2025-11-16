@@ -5,9 +5,9 @@
   "scripts": {
     "start": "node server.js"
   },
-  "dependencies": {
-    "ws": "^8.XX",
-    "@supabase/supabase-js": "^2.x",
-    "dotenv": "^16.x"
-  }
+ "dependencies": {
+  "ws": "^8.17.1",
+  "@supabase/supabase-js": "^2.45.2",
+  "dotenv": "^16.4.5",
+  "openai": "^4.63.0"
 }
