@@ -6,6 +6,7 @@ import WebSocket, { WebSocketServer } from "ws";
 import { createClient } from "@supabase/supabase-js";
 import crypto from "crypto";
 
+// Environment variables
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 const OPENAI_KEY = process.env.OPENAI_KEY;
@@ -18,33 +19,30 @@ if (!SUPABASE_URL || !SUPABASE_KEY || !OPENAI_KEY) {
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-// ----------------------------
-// HTTP SERVER (MANDATORY FOR RENDER)
-// ----------------------------
+// Audio params (must match Asterisk externalMedia)
+const SAMPLE_RATE = 8000; // Hz
+const CHANNELS = 1;
+const BYTES_PER_SAMPLE = 2; // 16-bit => 2 bytes
+
+// Create HTTP server
 const server = createServer((req, res) => {
-  // Basic health-check endpoint
-  if (req.url === "/") {
-    res.writeHead(200, { "Content-Type": "text/plain" });
-    return res.end("AI Call Agent is running.\n");
-  }
+  // Basic HTTP response so Render detects the port
+  res.writeHead(200, { "Content-Type": "text/plain" });
+  res.end("Voice Agent WebSocket Server is running\n");
 });
 
-// ----------------------------
-// WEBSOCKET SERVER
-// ----------------------------
+// WebSocket server for Asterisk
 const wss = new WebSocketServer({ server, path: "/stream" });
+
 console.log("WebSocket server starting on /stream");
 
-// Audio params (must match Asterisk externalMedia)
-const SAMPLE_RATE = 8000;
-const CHANNELS = 1;
-const BYTES_PER_SAMPLE = 2;
-
+// Handle Asterisk connections
 wss.on("connection", async (ws, req) => {
   console.log("New connection from Asterisk:", req.socket.remoteAddress);
 
   let incomingChunks = [];
   let outgoingChunks = [];
+
   const sessionId = crypto.randomUUID();
 
   async function uploadRecording() {
@@ -64,73 +62,53 @@ wss.on("connection", async (ws, req) => {
         { upsert: true }
       );
 
-      console.log("Uploaded recordings:", sessionId);
+      console.log("Uploaded recordings to Supabase for session:", sessionId);
     } catch (err) {
       console.error("Supabase upload error:", err);
     }
   }
 
   // -------------------------
-  // CONNECT TO OPENAI REALTIME WS
+  // Connect to OpenAI Realtime
   // -------------------------
-  const openaiUrl =
-    "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview";
+  const openaiUrl = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview";
+  const oaHeaders = {
+    Authorization: `Bearer ${OPENAI_KEY}`,
+    "OpenAI-Beta": "realtime=v1",
+  };
 
-  const openaiWs = new WebSocket(openaiUrl, {
-    headers: {
-      Authorization: `Bearer ${OPENAI_KEY}`,
-      "OpenAI-Beta": "realtime=v1",
-    },
-  });
+  const openaiWs = new WebSocket(openaiUrl, { headers: oaHeaders });
 
   openaiWs.on("open", () => {
-    console.log("Connected to OpenAI WS:", sessionId);
+    console.log("Connected to OpenAI Realtime WebSocket for session", sessionId);
 
     const initSystem = {
       type: "system.prompt",
       voice: VOICE_STYLE,
-      content:
-        "You are a friendly hospital receptionist. Keep responses short and helpful.",
+      content: "You are a friendly hospital receptionist. Keep responses short and helpful.",
     };
-
-    try {
-      openaiWs.send(JSON.stringify(initSystem));
-    } catch (e) {
-      console.error("OpenAI init send error", e);
-    }
+    openaiWs.send(JSON.stringify(initSystem));
   });
 
   openaiWs.on("message", (data) => {
     try {
       const msg = JSON.parse(data.toString());
-
       if (msg.type === "response.audio.delta" && msg.audio) {
         const pcmChunk = Buffer.from(msg.audio, "base64");
-
         if (ws.readyState === WebSocket.OPEN) ws.send(pcmChunk);
-
         outgoingChunks.push(pcmChunk);
       }
-    } catch (e) {
-      // ignore non-JSON messages
-    }
+    } catch (e) {}
   });
 
+  openaiWs.on("close", () => console.log("OpenAI WS closed for session", sessionId));
   openaiWs.on("error", (err) => console.error("OpenAI WS error:", err));
-  openaiWs.on("close", () =>
-    console.log("OpenAI WS closed:", sessionId)
-  );
 
   // -------------------------
-  // ASTERISK → AI AUDIO STREAM
+  // Handle incoming audio from Asterisk
   // -------------------------
   ws.on("message", (msg, isBinary) => {
-    if (!isBinary) {
-      try {
-        console.log("Control message from Asterisk:", JSON.parse(msg));
-      } catch (_) {}
-      return;
-    }
+    if (!isBinary) return;
 
     const pcm = Buffer.from(msg);
     incomingChunks.push(pcm);
@@ -146,31 +124,25 @@ wss.on("connection", async (ws, req) => {
   });
 
   ws.on("close", async () => {
-    console.log("Asterisk WS closed:", sessionId);
+    console.log("Asterisk connection closed for session", sessionId);
 
     try {
       if (openaiWs.readyState === WebSocket.OPEN) {
         openaiWs.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
         openaiWs.send(JSON.stringify({ type: "response.create" }));
       }
-    } catch (_) {}
+    } catch (e) {}
 
     await uploadRecording();
 
-    try {
-      openaiWs.close();
-    } catch (_) {}
+    try { openaiWs.close(); } catch (e) {}
   });
 
-  ws.on("error", (err) => {
-    console.error("Asterisk WS error:", sessionId, err);
-  });
+  ws.on("error", (err) => console.error("Asterisk WS error for session", sessionId, err));
 });
 
-// ----------------------------
-// START SERVER (💯 IMPORTANT FOR RENDER)
-// ----------------------------
-const PORT = process.env.PORT || 3001;
+// Listen on Render-provided port
+const PORT = Number(process.env.PORT || 3001);
 server.listen(PORT, () => {
   console.log(`Server listening on port ${PORT}`);
 });
