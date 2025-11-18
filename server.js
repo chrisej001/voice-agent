@@ -11,29 +11,31 @@ import ari from 'ari-client';
 
 const ARI_URL = 'ws://148.230.120.157:8088/ari/events';
 const ARI_USER = 'arianai';
-const ARI_PASS = 'Emelifejnr1995!';   // ← the password you set in ari.conf
+const ARI_PASS = 'Emelifejnr1995!';
 const ARI_APP = 'openai-realtime';
 
 function connectARI() {
-  ari.connect(url + ?api_key=user:pass&app=appname)
+  const wsUrl = `${ARI_URL}?api_key=${ARI_USER}:${ARI_PASS}&app=${ARI_APP}&subscribeAll=true`;
+
+  ari.connect(wsUrl)
     .then(client => {
-      console.log('✓ ARI connected to Asterisk');
+      console.log('✓ ARI WebSocket connected – app "openai-realtime" registered automatically');
+
+      // NO client.start() needed anymore – registration happens via the "app=" query param
 
       client.on('StasisStart', async (event, channel) => {
-        console.log(`✓ New call ${channel.caller.number} → ${channel.dialplan.exten}`);
+        console.log(`✓ Incoming call from ${channel.caller.number || 'unknown'}`);
 
         try {
           await channel.answer();
           console.log('Channel answered');
 
-          // Stop MOH immediately
-          await channel.stopMoh();
+          // Stop Music on Hold immediately if it started
+          try { await channel.stopMoh(); } catch (_) {}
 
-          // Create the WebSocket to YOUR OWN /stream endpoint
+          // Your existing externalMedia + OpenAI bridge code continues unchanged...
           const ws = new WebSocket('wss://voice-agent-8jbd.onrender.com/stream');
-
-          ws.on('open', () => console.log('WebSocket to OpenAI stream opened'));
-
+          
           // Caller audio → OpenAI
           channel.on('ChannelDtmfReceived', (ev) => {
             ws.send(JSON.stringify({ type: 'dtmf', digit: ev.digit }));
