@@ -9,17 +9,15 @@ import crypto from "crypto";
 // ADD THIS BLOCK ONLY – everything else in your server.js stays 100% the same
 import ari from 'ari-client';
 
-const ARI_URL = 'http://148.230.120.157:8088/ari';
+const ARI_URL = 'ws://148.230.120.157:8088/ari/events';
 const ARI_USER = 'arianai';
 const ARI_PASS = 'Emelifejnr1995!';   // ← the password you set in ari.conf
 const ARI_APP = 'openai-realtime';
 
 function connectARI() {
-  ari.connect(ARI_URL, ARI_USER, ARI_PASS)
+  ari.connect(url + ?api_key=user:pass&app=appname)
     .then(client => {
       console.log('✓ ARI connected to Asterisk');
-
-      client.start(ARI_APP);
 
       client.on('StasisStart', async (event, channel) => {
         console.log(`✓ New call ${channel.caller.number} → ${channel.dialplan.exten}`);
