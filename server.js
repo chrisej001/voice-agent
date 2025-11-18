@@ -23,35 +23,51 @@ function connectARI() {
       console.log('✓ ARI WebSocket connected and "openai-realtime" app registered successfully!');
       
       client.on('StasisStart', async (event, channel) => {
-        console.log(`✓ New incoming call from ${channel.caller?.number || 'unknown'}`);
-        
-        try {
-          await channel.answer();
-          console.log('Call answered');
-          try { await channel.stopMoh(); } catch (_) {}
+  console.log(`✓ New incoming call from ${channel.caller?.number || 'unknown'}`);
+  
+  try {
+    await channel.answer();
+    console.log('Call answered');
+    try { await channel.stopMoh(); } catch (_) {}
 
-          // === YOUR EXISTING CODE CONTINUES HERE EXACTLY AS BEFORE ===
-          const ws = new WebSocket('wss://voice-agent-8jbd.onrender.com/stream');
-          // ... (all the externalMedia, DTMF, etc. — leave 100% unchanged)
+    // Create the WebSocket to YOUR OWN /stream endpoint
+    const ws = new WebSocket('wss://voice-agent-8jbd.onrender.com/stream');
+    ws.on('open', () => console.log('WebSocket to OpenAI stream opened'));
 
-        } catch (err) {
-          console.error('Error handling call:', err);
-          try { channel.hangup(); } catch (_) {}
-        }
-      });
-
-      // Optional: log when connection drops
-      client.on('WebSocketDisconnected', () => {
-        console.log('ARI WebSocket disconnected – reconnecting...');
-      });
-    })
-    .catch(err => {
-      console.error('ARI connection failed:', err.message || err);
-      console.log('Retrying in 5 seconds...');
-      setTimeout(connectARI, 5000);
+    // Caller audio → OpenAI
+    channel.on('ChannelDtmfReceived', (ev) => {
+      ws.send(JSON.stringify({ type: 'dtmf', digit: ev.digit }));
     });
-}
 
+    // Raw PCM streaming both ways
+    const externalMedia = await channel.externalMedia({
+      channelId: channel.id,
+      format: 'ulaw',
+      direction: 'both',
+      connectionType: 'client',
+      remote: '127.0.0.1', // dummy – we use raw data events
+    });
+
+    externalMedia.on('data', chunk => {
+      if (ws.readyState === WebSocket.OPEN) ws.send(chunk);
+    });
+
+    ws.on('message', data => {
+      if (Buffer.isBuffer(data)) {
+        externalMedia.send(data);
+      }
+    });
+
+    channel.on('StasisEnd', () => {
+      ws.terminate();
+      externalMedia.close();
+    });
+
+  } catch (err) {
+    console.error('Error handling call:', err);
+    try { channel.hangup(); } catch (_) {}
+  }
+});
 // Start connecting (with auto-reconnect forever)
 connectARI();
 
