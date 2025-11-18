@@ -1,17 +1,20 @@
 {
   "name": "voice-agent",
   "version": "1.0.0",
-  "type": "module",
+  "description": "OpenAI Realtime AI Receptionist",
   "main": "server.js",
+  "type": "module",
   "scripts": {
     "start": "node server.js"
   },
-    "dependencies": {
+  "dependencies": {
     "@supabase/supabase-js": "^2.45.4",
     "dotenv": "^16.4.5",
     "openai": "^4.63.0",
     "ws": "^8.18.0",
     "ari-client": "^2.2.0"
-  }
+  },
+  "engines": {
+    "node": ">=20"
   }
 }
