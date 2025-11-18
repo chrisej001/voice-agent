@@ -6,6 +6,61 @@ import WebSocket, { WebSocketServer } from "ws";
 import { createClient } from "@supabase/supabase-js";
 import crypto from "crypto";
 
+// ADD THIS BLOCK ONLY – everything else in your server.js stays 100% the same
+import ari from 'ari-client';
+
+const ARI_URL = 'http://148.230.120.157:8088';
+const ARI_USER = 'arianai';
+const ARI_PASS = 'Emelifejnr1995!';   // ← same password as above
+const ARI_APP = 'openai-realtime';
+
+ari.connect(`${ARI_URL}/ari`, ARI_USER, ARI_PASS)
+  .then(client => {
+    console.log('ARI connected – ready for calls!');
+
+    client.on('StasisStart', async (event, channel) => {
+      const caller = channel.caller.number;
+      const called = event.args[1] || '+2342013941412';
+      console.log(`New call: ${caller} → ${called}`);
+
+      await channel.answer();
+
+      // Create a WebSocket connection to YOUR OWN /stream endpoint
+      const ws = new WebSocket(`wss://${process.env.RENDER_EXTERNAL_HOSTNAME || 'voice-agent-8jbd.onrender.com'}/stream`);
+
+      ws.on('open', () => {
+        console.log('WebSocket to OpenAI Realtime opened');
+      });
+
+      // Pipe audio from caller → OpenAI
+      channel.on('ChannelDtmfReceived', e => ws.send(JSON.stringify({ type: 'dtmf', digit: e.digit })));
+      const playback = client.Playback();
+      channel.startMoh();  // optional silence
+
+      // Use Asterisk ExternalMedia or simple raw PCM streaming (we use raw)
+      const media = channel.externalMedia({
+        format: 'ulaw',
+        direction: 'both'
+      });
+
+      ws.on('message', data => {
+        if (Buffer.isBuffer(data)) {
+          media.send(data);
+        }
+      });
+
+      media.on('data', chunk => ws.send(chunk));
+
+      channel.on('StasisEnd', () => {
+        ws.terminate();
+        channel.hangup();
+      });
+    });
+
+    client.start(ARI_APP);
+  })
+  .catch(err => console.error('ARI connection failed:', err));
+
 // Environment variables
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
