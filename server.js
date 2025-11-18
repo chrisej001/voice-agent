@@ -10,8 +10,8 @@ import crypto from "crypto";
 import ari from 'ari-client';
 
 const ARI_URL = 'http://148.230.120.157:8088/ari';
-const ARI_USER = 'ariuser';
-const ARI_PASS = 'SuperSecureARI2025';   // ← the password you set in ari.conf
+const ARI_USER = 'arianai';
+const ARI_PASS = 'Emelifejnr1995!';   // ← the password you set in ari.conf
 const ARI_APP = 'openai-realtime';
 
 function connectARI() {
