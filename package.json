@@ -6,11 +6,12 @@
   "scripts": {
     "start": "node server.js"
   },
-  "dependencies": {
-    "ws": "^8.17.1",
-    "@supabase/supabase-js": "^2.45.2",
+    "dependencies": {
+    "@supabase/supabase-js": "^2.45.4",
     "dotenv": "^16.4.5",
-    "openai": "^4.63.0"
+    "openai": "^4.63.0",
+    "ws": "^8.18.0",
     "ari-client": "^2.2.0"
+  }
   }
 }
