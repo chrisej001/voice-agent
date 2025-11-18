@@ -9,58 +9,75 @@ import crypto from "crypto";
 // ADD THIS BLOCK ONLY – everything else in your server.js stays 100% the same
 import ari from 'ari-client';
 
-const ARI_URL = 'http://148.230.120.157:8088';
-const ARI_USER = 'arianai';
-const ARI_PASS = 'Emelifejnr1995!';   // ← same password as above
+const ARI_URL = 'http://148.230.120.157:8088/ari';
+const ARI_USER = 'ariuser';
+const ARI_PASS = 'SuperSecureARI2025';   // ← the password you set in ari.conf
 const ARI_APP = 'openai-realtime';
 
-ari.connect(`${ARI_URL}/ari`, ARI_USER, ARI_PASS)
-  .then(client => {
-    console.log('ARI connected – ready for calls!');
+function connectARI() {
+  ari.connect(ARI_URL, ARI_USER, ARI_PASS)
+    .then(client => {
+      console.log('✓ ARI connected to Asterisk');
 
-    client.on('StasisStart', async (event, channel) => {
-      const caller = channel.caller.number;
-      const called = event.args[1] || '+2342013941412';
-      console.log(`New call: ${caller} → ${called}`);
+      client.start(ARI_APP);
 
-      await channel.answer();
+      client.on('StasisStart', async (event, channel) => {
+        console.log(`✓ New call ${channel.caller.number} → ${channel.dialplan.exten}`);
 
-      // Create a WebSocket connection to YOUR OWN /stream endpoint
-      const ws = new WebSocket(`wss://${process.env.RENDER_EXTERNAL_HOSTNAME || 'voice-agent-8jbd.onrender.com'}/stream`);
+        try {
+          await channel.answer();
+          console.log('Channel answered');
 
-      ws.on('open', () => {
-        console.log('WebSocket to OpenAI Realtime opened');
-      });
+          // Stop MOH immediately
+          await channel.stopMoh();
 
-      // Pipe audio from caller → OpenAI
-      channel.on('ChannelDtmfReceived', e => ws.send(JSON.stringify({ type: 'dtmf', digit: e.digit })));
-      const playback = client.Playback();
-      channel.startMoh();  // optional silence
+          // Create the WebSocket to YOUR OWN /stream endpoint
+          const ws = new WebSocket('wss://voice-agent-8jbd.onrender.com/stream');
 
-      // Use Asterisk ExternalMedia or simple raw PCM streaming (we use raw)
-      const media = channel.externalMedia({
-        format: 'ulaw',
-        direction: 'both'
-      });
+          ws.on('open', () => console.log('WebSocket to OpenAI stream opened'));
 
-      ws.on('message', data => {
-        if (Buffer.isBuffer(data)) {
-          media.send(data);
+          // Caller audio → OpenAI
+          channel.on('ChannelDtmfReceived', (ev) => {
+            ws.send(JSON.stringify({ type: 'dtmf', digit: ev.digit }));
+          });
+
+          // Raw PCM streaming both ways
+          const externalMedia = await channel.externalMedia({
+            channelId: channel.id,
+            format: 'ulaw',
+            direction: 'both',
+            connectionType: 'client',
+            remote: '127.0.0.1',   // dummy – we use raw data events
+          });
+
+          externalMedia.on('data', chunk => {
+            if (ws.readyState === WebSocket.OPEN) ws.send(chunk);
+          });
+
+          ws.on('message', data => {
+            if (Buffer.isBuffer(data)) {
+              externalMedia.send(data);
+            }
+          });
+
+          channel.on('StasisEnd', () => {
+            ws.terminate();
+            externalMedia.close();
+          });
+
+        } catch (err) {
+          console.error('ARI error:', err);
+          channel.hangup();
         }
       });
-
-      media.on('data', chunk => ws.send(chunk));
-
-      channel.on('StasisEnd', () => {
-        ws.terminate();
-        channel.hangup();
-      });
+    })
+    .catch(err => {
+      console.error('ARI connection failed – retrying in 5s', err.message);
+      setTimeout(connectARI, 5000);
     });
+}
 
-    client.start(ARI_APP);
-  })
-  .catch(err => console.error('ARI connection failed:', err));
-
+connectARI();   // start + auto-reconnect forever
 // Environment variables
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
